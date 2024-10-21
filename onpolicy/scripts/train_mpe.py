@@ -141,6 +141,14 @@ def parse_args(args, parser):
 
 
 def main(args):
+    print(np.__version__)
+
+    torch.cuda.empty_cache()
+
+    torch.cuda.set_per_process_memory_fraction(0.5, device=torch.cuda.current_device())
+    
+
+
     parser = get_config()
     all_args, parser = parse_args(args, parser)
     if all_args.env_name == "GraphMPE":
@@ -167,7 +175,7 @@ def main(args):
         "The simple_speaker_listener scenario can not use shared policy. "
         "Please check the config.py."
     )
-
+    all_args.cuda = True
     # cuda
     if all_args.cuda and torch.cuda.is_available():
         print_box("Choose to use gpu...")
@@ -184,6 +192,10 @@ def main(args):
     if all_args.verbose:
         print_args(all_args)
 
+
+    print(f"Allocated: {torch.cuda.memory_allocated(0) / 1024**2} MB")
+    print(f"Cached: {torch.cuda.memory_reserved(0) / 1024**2} MB")
+    
     # run dir
     run_dir = (
         Path(os.path.split(os.path.dirname(os.path.abspath(__file__)))[0] + "/results")
@@ -195,6 +207,7 @@ def main(args):
     if not run_dir.exists():
         os.makedirs(str(run_dir))
 
+    all_args.use_wandb=False
     # wandb
     if all_args.use_wandb:
         # for supercloud when no internet_connection

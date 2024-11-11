@@ -13,6 +13,9 @@ import argparse
 from typing import List, Tuple, Union, Optional
 from torch_geometric.typing import OptPairTensor, Adj, OptTensor, Size
 
+from torch_geometric.nn import GATConv
+
+
 from .util import init, get_clones
 
 """GNN modules"""
@@ -119,7 +122,7 @@ class EmbedConv(MessagePassing):
         return x
 
 
-class TransformerConvNet(nn.Module):
+class GATNet(nn.Module):
     def __init__(
         self,
         input_dim: int,
@@ -198,7 +201,7 @@ class TransformerConvNet(nn.Module):
                 Edge feature dimension, If zero then edge features are not
                 considered in `EmbedConv`. Defaults to 1.
         """
-        super(TransformerConvNet, self).__init__()
+        super(GATNet, self).__init__()
         self.active_func = [nn.Tanh(), nn.ReLU()][use_ReLU]
         self.num_heads = num_heads
         self.concat_heads = concat_heads
@@ -220,21 +223,26 @@ class TransformerConvNet(nn.Module):
             add_self_loop=embed_add_self_loop,
             edge_dim=edge_dim,
         )
-        self.gnn1 = TransformerConv(
+        self.gnn1 = GATConv(
             in_channels=embed_hidden_size,
             out_channels=hidden_size,
             heads=num_heads,
             concat=concat_heads,
-            beta=False,
             dropout=0.0,
-            edge_dim=edge_dim,
-            bias=True,
-            root_weight=True,
+            edge_dim=edge_dim if edge_dim > 0 else None,
         )
+
         self.gnn2 = nn.ModuleList()
-        for i in range(layer_N):
+        for _ in range(layer_N):
             self.gnn2.append(
-                self.addTCLayer(self.getInChannels(hidden_size), hidden_size)
+                GATConv(
+                    in_channels=hidden_size * num_heads if concat_heads else hidden_size,
+                    out_channels=hidden_size,
+                    heads=num_heads,
+                    concat=concat_heads,
+                    dropout=0.0,
+                    edge_dim=edge_dim if edge_dim > 0 else None,
+                )
             )
 
     def forward(self, node_obs: Tensor, adj: Tensor, agent_id: Tensor):
@@ -405,49 +413,6 @@ class TransformerConvNet(nn.Module):
 
 
 class GNNBase(nn.Module):
-    """
-    A Wrapper for constructing the Base graph neural network.
-    This uses TransformerConv from Pytorch Geometric
-    https://pytorch-geometric.readthedocs.io/en/latest/modules/nn.html#torch_geometric.nn.conv.TransformerConv
-    and embedding layers for entity types
-    Params:
-    args: (argparse.Namespace)
-        Should contain the following arguments
-        num_embeddings: (int)
-            Number of entity types in the env to have different embeddings
-            for each entity type
-        embedding_size: (int)
-            Embedding layer output size for each entity category
-        embed_hidden_size: (int)
-            Hidden layer dimension after the embedding layer
-        embed_layer_N: (int)
-            Number of hidden linear layers after the embedding layer")
-        embed_use_ReLU: (bool)
-            Whether to use ReLU in the linear layers after the embedding layer
-        embed_add_self_loop: (bool)
-            Whether to add self loops in adjacency matrix
-        gnn_hidden_size: (int)
-            Hidden layer dimension in the GNN
-        gnn_num_heads: (int)
-            Number of heads in the transformer conv layer (GNN)
-        gnn_concat_heads: (bool)
-            Whether to concatenate the head output or average
-        gnn_layer_N: (int)
-            Number of GNN conv layers
-        gnn_use_ReLU: (bool)
-            Whether to use ReLU in GNN conv layers
-        max_edge_dist: (float)
-            Maximum distance above which edges cannot be connected between
-            the entities
-        graph_feat_type: (str)
-            Whether to use 'global' node/edge feats or 'relative'
-            choices=['global', 'relative']
-    node_obs_shape: (Union[Tuple, List])
-        The node observation shape. Example: (18,)
-    edge_dim: (int)
-        Dimensionality of edge attributes
-    """
-
     def __init__(
         self,
         args: argparse.Namespace,
@@ -461,7 +426,7 @@ class GNNBase(nn.Module):
         self.hidden_size = args.gnn_hidden_size
         self.heads = args.gnn_num_heads
         self.concat = args.gnn_concat_heads
-        self.gnn = TransformerConvNet(
+        self.gnn = GATNet(
             input_dim=node_obs_shape,
             edge_dim=edge_dim,
             num_embeddings=args.num_embeddings,
@@ -488,4 +453,7 @@ class GNNBase(nn.Module):
 
     @property
     def out_dim(self):
-        return self.hidden_size + (self.heads - 1) * self.concat * (self.hidden_size)
+        if self.concat:
+            return self.hidden_size * self.heads
+        else:
+            return self.hidden_size

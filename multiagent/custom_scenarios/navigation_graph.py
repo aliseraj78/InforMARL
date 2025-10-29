@@ -535,7 +535,7 @@ if __name__ == "__main__":
             self.collaborative: bool = False
             self.max_speed: Optional[float] = 2
             self.collision_rew: float = 5
-            self.goal_rew: float = 5
+            self.goal_rew: float = 6
             self.min_dist_thresh: float = 0.1
             self.use_dones: bool = False
             self.episode_length: int = 25

@@ -86,7 +86,7 @@ def parse_args(args, parser):
     parser.add_argument(
         "--goal_rew",
         type=float,
-        default=5,
+        default=6,
         help="The reward to be added if agent reaches the goal",
     )
     parser.add_argument(
@@ -124,34 +124,47 @@ def modify_args(
     ],
 ):
     """
-    Modify the args used to train the model
+    Modify the args used to train the model by loading
+    config.yaml (flat or nested) and then applying CLI defaults.
     """
     import yaml
 
-    with open(str(model_dir) + "/config.yaml") as f:
-        ydict = yaml.load(f)
+    # 1) load your YAML (flat key: value or key: {value: …})
+    with open(os.path.join(model_dir, "config.yaml"), "r") as f:
+        ydict = yaml.safe_load(f)
 
     print("_" * 50)
+    # 2) apply every key except those in exclude_args
     for k, v in ydict.items():
         if k in exclude_args:
-            print(f"Using {k} = {vars(args)[k]}")
-            # print(f"Skipping {k} with value {args.k}")
+            print(f"Using {k} = {getattr(args, k)}")
             continue
-        # all args have 'values' and 'desc' as keys
-        if type(v) == dict:
-            if "value" in v.keys():
-                # print(f'Setting attr {k} to {ydict[k]["value"]}')
-                setattr(args, k, ydict[k]["value"])
+
+        # decide whether v is a dict-with-["value"] or a flat literal
+        if isinstance(v, dict) and "value" in v:
+            new_val = v["value"]
+        else:
+            new_val = v
+
+        print(f"Setting attr {k} to {new_val!r}")
+        setattr(args, k, new_val)
     print("_" * 50)
 
-    # set some args manually
+    # 3) any manual overrides you still want to force
     args.cuda = False
     args.use_wandb = False
     args.use_render = True
     args.save_gifs = True
     args.n_rollout_threads = 1
 
+    # 4) ensure the graph aggregation settings exist
+    if not hasattr(args, "actor_graph_aggr"):
+        args.actor_graph_aggr = "mean"
+    if not hasattr(args, "critic_graph_aggr"):
+        args.critic_graph_aggr = "mean"
+
     return args
+
 
 
 def main(args):
@@ -175,6 +188,8 @@ def main(args):
     assert not (
         all_args.model_dir == None or all_args.model_dir == ""
     ), "set model_dir first"
+    all_args.n_rollout_threads = 1
+    all_args.graph_feat_type="relative"
     assert all_args.n_rollout_threads == 1, "only support to use 1 env to render."
 
     device = torch.device("cpu")
@@ -219,7 +234,7 @@ def main(args):
     runner = Runner(config)
     # actor_state_dict = torch.load(str(model_dir) + '/actor.pt')
     # runner.policy.actor.load_state_dict(actor_state_dict)
-    runner.render(True)
+    runner.render()
 
     # post process
     envs.close()

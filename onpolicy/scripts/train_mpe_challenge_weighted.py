@@ -6,6 +6,7 @@ import setproctitle
 import numpy as np
 from pathlib import Path
 import torch
+import wandb
 
 import os, sys
 
@@ -13,7 +14,7 @@ sys.path.append(os.path.abspath(os.getcwd()))
 
 from utils.utils import print_args, print_box, connected_to_internet
 from onpolicy.config import get_config
-from multiagent.MPE_env import MPEEnv, GraphMPEEnv
+from multiagent.MPE_env_challenge_weighted import MPEEnv, GraphMPEEnv
 from onpolicy.envs.env_wrappers import (
     SubprocVecEnv,
     DummyVecEnv,
@@ -21,7 +22,7 @@ from onpolicy.envs.env_wrappers import (
     GraphDummyVecEnv,
 )
 
-"""Train script for MPEs."""
+"""Train script for MPEs with challenge-based reward weighting."""
 
 
 def make_train_env(all_args: argparse.Namespace):
@@ -133,6 +134,56 @@ def parse_args(args, parser):
         "when agent has reached the goal or just return False like "
         "the `simple.py` or `simple_spread.py`",
     )
+    
+    # Challenge weighting parameters
+    parser.add_argument(
+        "--enable_challenge_weighting",
+        type=lambda x: bool(strtobool(x)),
+        default=False,
+        help="Whether to enable challenge-based reward weighting",
+    )
+    parser.add_argument(
+        "--challenge_amplification_factor",
+        type=float,
+        default=2.0,
+        help="How much to amplify rewards for challenging situations",
+    )
+    parser.add_argument(
+        "--challenge_min_threshold",
+        type=float,
+        default=0.1,
+        help="Minimum challenge level to start weighting",
+    )
+    parser.add_argument(
+        "--challenge_max_threshold",
+        type=float,
+        default=8.0,
+        help="Maximum challenge level for normalization",
+    )
+    parser.add_argument(
+        "--challenge_distance_weight",
+        type=float,
+        default=1.5,
+        help="Weight for distance to goal challenge",
+    )
+    parser.add_argument(
+        "--challenge_obstacle_weight",
+        type=float,
+        default=2.0,
+        help="Weight for obstacle density challenge",
+    )
+    parser.add_argument(
+        "--challenge_collision_weight",
+        type=float,
+        default=1.8,
+        help="Weight for collision risk challenge",
+    )
+    parser.add_argument(
+        "--challenge_coordination_weight",
+        type=float,
+        default=1.5,
+        help="Weight for multi-agent coordination challenge",
+    )
 
     all_args = parser.parse_known_args(args)[0]
 
@@ -166,22 +217,31 @@ def main(args):
         "The simple_speaker_listener scenario can not use shared policy. "
         "Please check the config.py."
     )
-    all_args.cuda = True
+
+    # Print challenge weighting configuration
+    if all_args.enable_challenge_weighting:
+        print_box("Challenge Weighting Configuration")
+        print(f"Amplification Factor: {all_args.challenge_amplification_factor}")
+        print(f"Min Threshold: {all_args.challenge_min_threshold}")
+        print(f"Max Threshold: {all_args.challenge_max_threshold}")
+        print(f"Distance Weight: {all_args.challenge_distance_weight}")
+        print(f"Obstacle Weight: {all_args.challenge_obstacle_weight}")
+        print(f"Collision Weight: {all_args.challenge_collision_weight}")
+        print(f"Coordination Weight: {all_args.challenge_coordination_weight}")
+        print_box("End Challenge Weighting Configuration")
+
     # cuda
     if all_args.cuda and torch.cuda.is_available():
-        print_box("Choose to use gpu...")
+        print("choose to use gpu...")
         device = torch.device("cuda:0")
         torch.set_num_threads(all_args.n_training_threads)
         if all_args.cuda_deterministic:
             torch.backends.cudnn.benchmark = False
             torch.backends.cudnn.deterministic = True
     else:
-        print_box("Choose to use cpu...")
+        print("choose to use cpu...")
         device = torch.device("cpu")
         torch.set_num_threads(all_args.n_training_threads)
-
-    if all_args.verbose:
-        print_args(all_args)
 
     # run dir
     run_dir = (
@@ -194,42 +254,17 @@ def main(args):
     if not run_dir.exists():
         os.makedirs(str(run_dir))
 
-
-
-    # wandb
     all_args.use_wandb=False
-
     if all_args.use_wandb:
-        # for supercloud when no internet_connection
-        if not connected_to_internet():
-            import json
-
-            # save a json file with your wandb api key in your
-            # home folder as {'my_wandb_api_key': 'INSERT API HERE'}
-            # NOTE this is only for running on systems without internet access
-            # have to run `wandb sync wandb/run_name` to sync logs to wandboard
-            with open(os.path.expanduser("~") + "/keys.json") as json_file:
-                key = json.load(json_file)
-                my_wandb_api_key = key["my_wandb_api_key"]  # NOTE change here as well
-            os.environ["WANDB_API_KEY"] = my_wandb_api_key
-            os.environ["WANDB_MODE"] = "dryrun"
-            os.environ["WANDB_SAVE_CODE"] = "true"
-
-        print_box("Creating wandboard...")
         run = wandb.init(
             config=all_args,
             project=all_args.project_name,
-            # project=all_args.env_name,
             entity=all_args.user_name,
             notes=socket.gethostname(),
-            name=str(all_args.algorithm_name)
-            + "_"
-            + str(all_args.experiment_name)
-            + "_seed"
-            + str(all_args.seed),
-            # group=all_args.scenario_name,
+            name=str(all_args.algorithm_name) + "_" + str(all_args.experiment_name) + "_seed" + str(all_args.seed),
+            group=all_args.scenario_name,
             dir=str(run_dir),
-            # job_type="training",
+            job_type="training",
             reinit=True,
         )
     else:
@@ -259,16 +294,6 @@ def main(args):
         + str(all_args.user_name)
     )
 
-    import yaml
-    import shutil
-    with open(run_dir / "config.yaml", "w") as fp:
-        yaml.dump(vars(all_args), fp, sort_keys=False)
-
-    # 5) ensure models/ exists and copy the same config there
-    model_dir = run_dir / "models"
-    model_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy(run_dir / "config.yaml", model_dir / "config.yaml")
-
     # seed
     torch.manual_seed(all_args.seed)
     torch.cuda.manual_seed_all(all_args.seed)
@@ -289,32 +314,25 @@ def main(args):
     }
 
     # run experiments
-    if all_args.share_policy:
-        if all_args.env_name == "GraphMPE":
+    if all_args.env_name == "GraphMPE":
+        # Use graph-specific runner for GraphMPE
+        if all_args.share_policy:
             from onpolicy.runner.shared.graph_mpe_runner import GMPERunner as Runner
         else:
-            from onpolicy.runner.shared.mpe_runner import MPERunner as Runner
+            raise NotImplementedError("Separated policy not implemented for GraphMPE")
     else:
-        if all_args.env_name == "GraphMPE":
-            raise NotImplementedError
-        from onpolicy.runner.separated.mpe_runner import MPERunner as Runner
+        # Use regular MPE runner
+        if all_args.share_policy:
+            from onpolicy.runner.shared.mpe_runner import MPERunner as Runner
+        else:
+            from onpolicy.runner.separated.mpe_runner import MPERunner as Runner
 
     runner = Runner(config)
-    if all_args.verbose:
-        print_box("Actor Network", 80)
-        if type(runner.policy) == list:
-            print_box(runner.policy[0].actor, 80)
-            print_box("Critic Network", 80)
-            print_box(runner.policy[0].critic, 80)
-        else:
-            print_box(runner.policy.actor, 80)
-            print_box("Critic Network", 80)
-            print_box(runner.policy.critic, 80)
     runner.run()
 
     # post process
     envs.close()
-    if all_args.use_eval and eval_envs is not envs:
+    if all_args.use_eval and eval_envs is not None:
         eval_envs.close()
 
     if all_args.use_wandb:
@@ -325,4 +343,4 @@ def main(args):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    main(sys.argv[1:]) 

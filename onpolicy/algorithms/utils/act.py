@@ -107,6 +107,13 @@ class ACTLayer(nn.Module):
             action_log_probs = torch.cat(action_log_probs, -1)
 
         else:
+            if available_actions is not None:
+                if not torch.all(torch.isfinite(x)):
+                    print("NaNs or Infs in x BEFORE Categorical forward!")
+                if not torch.all((available_actions == 0) | (available_actions == 1)):
+                    print("ERROR: available_actions contains values not in {0,1}!")
+                if available_actions.shape[0] != x.shape[0]:
+                    print("ERROR: batch size mismatch between x and available_actions!")
             action_logits = self.action_out(x, available_actions)
             actions = action_logits.mode() if deterministic else action_logits.sample()
             action_log_probs = action_logits.log_probs(actions)
